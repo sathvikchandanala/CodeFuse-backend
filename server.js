@@ -30,7 +30,7 @@ admin.initializeApp({
 
 app.use(
   cors({
-    origin: "https://code-fuse-henna.vercel.app/",
+    origin: "https://code-fuse-henna.vercel.app",
     credentials: true,
   })
 );
