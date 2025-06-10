@@ -1,11 +1,15 @@
+const express = require('express');
 const { LeetCode } = require('leetcode-query');
 
+const router = express.Router();
 const lc = new LeetCode();
 
-async function getUserDetails(username) {
+// GET /api/leetcode/profile/:username
+router.get('/profile/:username', async (req, res) => {
+  const { username } = req.params;
+
   try {
     const profile = await lc.user(username);
-    console.log("Raw user profile:", profile);
 
     const userDetails = {
       realName: profile.real_name || null,
@@ -19,31 +23,24 @@ async function getUserDetails(username) {
       hardSolved: profile.submit_stats?.ac_hard || null,
     };
 
-    return userDetails;
+    res.status(200).json(userDetails);
   } catch (error) {
-    console.error("Failed to fetch user details:", error);
+    console.error('Error fetching profile:', error);
+    res.status(500).json({ error: 'Failed to fetch user profile' });
   }
-}
+});
 
-async function getProblemOfTheDay() {
+// GET /api/leetcode/problem-of-day
+router.get('/problem-of-day', async (req, res) => {
   try {
     const daily = await lc.daily();
-    // daily object contains 'question' key
     const problem = daily.question || null;
-    return problem;
+
+    res.status(200).json(problem);
   } catch (error) {
-    console.error("Failed to fetch problem of the day:", error);
+    console.error('Error fetching problem of the day:', error);
+    res.status(500).json({ error: 'Failed to fetch problem of the day' });
   }
-}
+});
 
-async function main() {
-  const username = "sathvik_chandanala";
-
-  const user = await getUserDetails(username);
-  console.log("User Profile:", user);
-
-  const problemOfTheDay = await getProblemOfTheDay();
-  console.log("Problem of the Day:", problemOfTheDay);
-}
-
-main();
+module.exports = router;
