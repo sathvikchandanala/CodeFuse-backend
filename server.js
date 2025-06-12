@@ -6,6 +6,7 @@ const admin = require("firebase-admin");
 const dotenv = require("dotenv");
 const { LeetCode } = require('leetcode-query');
 const axios=require("axios")
+const fetch = require("node-fetch");
 
 const lc = new LeetCode();
 
@@ -54,6 +55,347 @@ app.use(cookieParser());
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
+const normalizeCodeChef = (data) => {
+  const now = Date.now();
+  const contests = [
+    ...data.future_contests,
+    ...data.present_contests,
+    ...data.past_contests
+  ];
+
+  return contests
+    .filter(c => c.contest_start_date_iso && c.contest_end_date_iso)
+    .map(c => {
+      const start = new Date(c.contest_start_date_iso);
+      const end = new Date(c.contest_end_date_iso);
+
+      if (isNaN(start) || isNaN(end)) return null;
+
+      let status = "Past";
+      if (now < start.getTime()) status = "Upcoming";
+      else if (now >= start.getTime() && now <= end.getTime()) status = "Ongoing";
+
+      return {
+        id: `CodeChef-${c.contest_code}`,
+        name: c.contest_name,
+        platform: "CodeChef",
+        type: "Unknown",
+        url: `https://www.codechef.com/${c.contest_code}`,
+        startTime: start.toISOString(),
+        endTime: end.toISOString(),
+        duration: `${c.contest_duration} minutes`,
+        status,
+      };
+    })
+    .filter(Boolean);
+};
+
+const normalizeCF = (data) =>
+  data.result
+    .filter(c => c.phase !== "CANCELED")
+    .map((c) => {
+      let status = "Past";
+      if (c.phase === "BEFORE") status = "Upcoming";
+      else if (c.phase === "CODING") status = "Ongoing";
+
+      return {
+        id: `Codeforces-${c.id}`,
+        name: c.name,
+        platform: "Codeforces",
+        type: c.type,
+        url: `https://codeforces.com/contest/${c.id}`,
+        startTime: new Date(c.startTimeSeconds * 1000).toISOString(),
+        endTime: new Date((c.startTimeSeconds + c.durationSeconds) * 1000).toISOString(),
+        duration: `${Math.floor(c.durationSeconds / 60)} minutes`,
+        status,
+      };
+    });
+
+async function getLeetCodeContests() {
+  const res = await fetch('https://leetcode.com/graphql', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: `
+        query {
+          allContests {
+            title
+            titleSlug
+            startTime
+            duration
+          }
+        }
+      `,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch LeetCode contests: ${res.status}`);
+  }
+
+  const json = await res.json();
+  const contests = json?.data?.allContests || [];
+
+  const now = Math.floor(Date.now() / 1000);
+
+  return contests.map((c, i) => {
+    const start = c.startTime;
+    const end = c.startTime + c.duration;
+    let status = "Past";
+    if (now < start) status = "Upcoming";
+    else if (now >= start && now <= end) status = "Ongoing";
+
+    const typeMatch = c.title.match(/(Weekly|Biweekly|Monthly)/i);
+
+    return {
+      id: `LeetCode-${i}`,
+      name: c.title,
+      type: typeMatch ? typeMatch[1] : "Unknown",
+      platform: "LeetCode",
+      url: `https://leetcode.com/contest/${c.titleSlug}`,
+      startTime: new Date(start * 1000).toISOString(),
+      endTime: new Date(end * 1000).toISOString(),
+      duration: `${Math.floor(c.duration / 60)} minutes`,
+      status,
+    };
+  });
+}
+
+const normalizeDevpost = (data) => {
+  return data.hackathons
+    .filter(h => h.open_state === "open")
+    .map(h => {
+      const isOnline = h.displayed_location?.location?.toLowerCase().includes('online');
+      const prizeMatch = h.prize_amount?.match(/\d[\d,]*/);
+      const prize = prizeMatch ? parseInt(prizeMatch[0].replace(/,/g, '')) : 0;
+
+      return {
+        id: `Devpost-${h.id}`,
+        title: h.title,
+        mode: isOnline ? "online" : "offline",
+        prize: prize,
+        postedDate: new Date().toISOString(), // No actual field available
+        url: h.url,
+        thumbnail_url: h.thumbnail_url?.startsWith("http") ? h.thumbnail_url : `https:${h.thumbnail_url}`,
+        time_left_to_submission: h.time_left_to_submission,
+        submission_period_dates: h.submission_period_dates,
+        themes: h.themes || [],
+        registrations_count: h.registrations_count || 0
+      };
+    });
+};
+
+
+
+
+app.get("/leetcode/:username", async (req, res) => {
+  const username = req.params.username;
+
+  const query = `
+    query userProfile($username: String!) {
+      allQuestionsCount {
+        difficulty
+        count
+      }
+      matchedUser(username: $username) {
+        username
+        profile{
+        starRating}
+        submitStatsGlobal {
+          acSubmissionNum {
+            difficulty
+            count
+          }
+        }
+        userCalendar {
+          submissionCalendar
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await axios.post(
+      "https://leetcode.com/graphql",
+      {
+        query,
+        variables: { username }
+      },
+      {
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const data = response.data.data;
+    const user = data.matchedUser;
+    const totalQuestions = data.allQuestionsCount;
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const acStats = user.submitStatsGlobal.acSubmissionNum;
+    const calendarRaw = user.userCalendar?.submissionCalendar || "{}";
+    const parsedCalendar = Object.entries(JSON.parse(calendarRaw)).map(([ts, count]) => ({
+      date: new Date(Number(ts) * 1000).toISOString().split("T")[0],
+      count: Number(count),
+    }));
+
+    // Sort calendar by date
+    parsedCalendar.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Create a Set of dates with submissions
+const submissionDates = new Set(parsedCalendar.map((entry) => entry.date));
+
+// Track max and current streaks
+let maxStreak = 0;
+let currentStreak = 0;
+let today = new Date();
+today.setUTCHours(0, 0, 0, 0);
+
+for (let i = 0; i < 365; i++) {
+  const dateStr = today.toISOString().split("T")[0];
+  if (submissionDates.has(dateStr)) {
+    currentStreak++;
+    maxStreak = Math.max(maxStreak, currentStreak);
+  } else {
+    if (i === 0) {
+      currentStreak = 0; // today has no submission, so streak is zero
+    } else {
+      break; // stop streak when a day is missed
+    }
+  }
+  // Move to previous day
+  today.setDate(today.getDate() - 1);
+}
+
+
+    // Total problems from LeetCode
+    const getTotal = (difficulty) =>
+      totalQuestions.find((q) => q.difficulty === difficulty)?.count || 0;
+
+    res.json({
+      username: user.username,
+      solved: {
+        total: acStats.find((x) => x.difficulty === "All")?.count || 0,
+        easy: acStats.find((x) => x.difficulty === "Easy")?.count || 0,
+        medium: acStats.find((x) => x.difficulty === "Medium")?.count || 0,
+        hard: acStats.find((x) => x.difficulty === "Hard")?.count || 0,
+      },
+      totals: {
+        total: getTotal("All"),
+        easy: getTotal("Easy"),
+        medium: getTotal("Medium"),
+        hard: getTotal("Hard"),
+      },
+      calendar: parsedCalendar,
+      streak: currentStreak,
+      maxStreak,
+      rating: user.profile.starRating // Placeholder, LeetCode does not expose rating via public API
+    });
+  } catch (error) {
+    console.error("Error fetching LeetCode data:", error.message);
+    res.status(500).json({ error: "Failed to fetch LeetCode data" });
+  }
+});
+
+app.get("/codeforces/:username", async (req, res) => {
+  const username = req.params.username;
+  try {
+    const [ratingRes, statusRes] = await Promise.all([
+      axios.get(`https://codeforces.com/api/user.rating?handle=${username}`),
+      axios.get(`https://codeforces.com/api/user.status?handle=${username}&from=1&count=10000`)
+    ]);
+
+    // Ratings
+    const ratings = ratingRes.data.result;
+    const currentRating = ratings.length ? ratings[ratings.length - 1].newRating : null;
+    const maxRating = ratings.length ? Math.max(...ratings.map(r => r.newRating)) : null;
+
+    // Extract solved counts & heatmap
+    const solvedMap = new Map(); // problem.name -> rating
+    const submissions = statusRes.data.result;
+    const calendarMap = {}; // date → submissions that day
+
+    submissions.forEach(s => {
+      if (s.verdict === "OK") {
+        const prob = s.problem;
+        const probId = `${prob.contestId}-${prob.index}`;
+        if (!solvedMap.has(probId)) {
+          solvedMap.set(probId, prob.rating || null); // store only first AC
+        }
+
+        const d = new Date(s.creationTimeSeconds * 1000).toISOString().split("T")[0];
+        calendarMap[d] = (calendarMap[d] || 0) + 1;
+      }
+    });
+
+    // Difficulty counts
+    let easy = 0, medium = 0, hard = 0, unknown = 0;
+    for (const rating of solvedMap.values()) {
+      if (!rating) unknown++;
+      else if (rating <= 1200) easy++;
+      else if (rating <= 1800) medium++;
+      else hard++;
+    }
+
+    // Format calendar
+    const calendar = Object.entries(calendarMap).map(([date, count]) => ({ date, count }));
+
+    // Response
+    res.json({
+      username,
+      rating: currentRating,
+      maxRating,
+      solvedCount: solvedMap.size,
+      easyCount: easy,
+      mediumCount: medium,
+      hardCount: hard,
+      unknownCount: unknown,
+      calendar
+    });
+  } catch (err) {
+    console.error("CF fetch error:", err.message);
+    res.status(500).json({ error: "Failed to fetch Codeforces data" });
+  }
+});
+
+
+
+ 
+app.get('/hackathons', async (req, res) => {
+  try {
+    const { data } = await axios.get('https://devpost.com/api/hackathons?challenge_type=all&sort_by=recent');
+    const hackathons = normalizeDevpost(data);
+    res.json(hackathons);
+  } catch (error) {
+    console.error("Error fetching hackathons:", error.message);
+    res.status(500).json({ message: "Failed to fetch hackathons" });
+  }
+});
+
+
+
+app.get("/contests", async (req, res) => {
+  try {
+    const cfRes = await axios.get("https://codeforces.com/api/contest.list");
+    const codeforcesContests = normalizeCF(cfRes.data);
+
+    const leetcodeContests = await getLeetCodeContests();
+
+    const ccRes = await axios.get("https://www.codechef.com/api/list/contests/all?sort_by=START&sorting_order=asc&offset=0&mode=all");
+    const codechefContests = normalizeCodeChef(ccRes.data);
+
+    const allContests = [...codeforcesContests, ...leetcodeContests, ...codechefContests];
+    res.json(allContests);
+  } catch (error) {
+    console.error(error.message);
+    res.status(500).json({ message: "Failed to fetch contests." });
+  }
+});
+
+
+
 // LeetCode Ranking
 async function getLeetCodeRank(username) {
   try {
@@ -91,8 +433,6 @@ async function getCodeChefRank(username) {
   }
 }
 
-
-
 app.post("/login", async (req, res) => {
   const { idToken } = req.body;
 
@@ -103,8 +443,6 @@ app.post("/login", async (req, res) => {
     if (!userRecord.emailVerified) {
       return res.status(401).json({ error: "Email not verified" });
     }
-
-    // Here you can add Firestore user data check/create if needed server-side
 
     const customToken = jwt.sign(
       { uid: decoded.uid, email: decoded.email },
