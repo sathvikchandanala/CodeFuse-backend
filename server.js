@@ -433,6 +433,28 @@ async function getCodeChefRank(username) {
   }
 }
 
+app.post("/codechef-rating", async (req, res) => {
+  const { usernames } = req.body;
+
+  if (!Array.isArray(usernames) || usernames.length === 0) {
+    return res.status(400).json({ error: "usernames must be a non-empty array" });
+  }
+
+  try {
+    const results = {};
+    await Promise.all(
+      usernames.map(async (username) => {
+        const ranking = await getCodeChefRank(username);
+        results[username] = { ranking };
+      })
+    );
+    res.json(results);
+  } catch (err) {
+    console.error("CodeChef API error:", err.message);
+    res.status(500).json({ error: "Failed to fetch CodeChef rankings" });
+  }
+});
+
 app.post("/login", async (req, res) => {
   const { idToken } = req.body;
 
@@ -585,6 +607,53 @@ async function getUserDetails(username) {
     throw error;
   }
 }
+
+app.post("/leetcode-ranking", async (req, res) => {
+  const { usernames } = req.body;
+
+  if (!Array.isArray(usernames) || usernames.length === 0) {
+    return res.status(400).json({ error: "usernames must be a non-empty array" });
+  }
+
+  try {
+    const results = {};
+    await Promise.all(usernames.map(async (username) => {
+      const ranking = await getLeetCodeRank(username);
+      results[username] = { ranking };
+    }));
+
+    res.json(results);
+  } catch (err) {
+    console.error("LeetCode API error:", err.message);
+    res.status(500).json({ error: "Failed to fetch LeetCode rankings" });
+  }
+});
+
+
+app.post("/codeforces-rating", async (req, res) => {
+  const { usernames } = req.body;
+
+  if (!Array.isArray(usernames) || usernames.length === 0) {
+    return res.status(400).json({ error: "usernames must be a non-empty array" });
+  }
+
+  try {
+    const results = {};
+
+    await Promise.all(usernames.map(async (username) => {
+      const rating = await getCodeforcesRank(username);
+      results[username] = { ranking: rating || 0 };
+    }));
+
+    res.json(results);
+  } catch (err) {
+    console.error("Codeforces API error:", err.message);
+    res.status(500).json({ error: "Failed to fetch Codeforces ratings" });
+  }
+});
+
+
+
 
 app.post("/platform-scores", async (req, res) => {
   const { CodeChef, Codeforces, LeetCode } = req.body;
