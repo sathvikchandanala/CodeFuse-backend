@@ -35,7 +35,7 @@ admin.initializeApp({
 
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://code-fuse-henna.vercel.app"
+  "https://code-fuse-app.vercel.app"
 ];
 
 app.use(
